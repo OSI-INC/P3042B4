@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DiamondModule name="CPU_ROM" module="CPU_ROM" VendorName="Lattice Semiconductor Corporation" generator="IPexpress" date="2026 07 30 14:31:55.024" version="5.4" type="Module" synthesis="synplify" source_format="VHDL">
+  <Package>
+		<File name="" type="" modified="2026 07 30 14:31:54.229"/>
+		<File name="CPU_ROM.lpc" type="lpc" modified="2026 07 30 14:31:50.110"/>
+		<File name="CPU_ROM.vhd" type="top_level_vhdl" modified="2026 07 30 14:31:50.204"/>
+		<File name="CPU_ROM_tmpl.vhd" type="template_vhdl" modified="2026 07 30 14:31:50.204"/>
+		<File name="c:/kevan/a3042/p3042b4/cpu_rom.mem" type="mem" modified="2026 07 30 14:31:41.756"/>
+		<File name="tb_CPU_ROM_tmpl.vhd" type="testbench_vhdl" modified="2026 07 30 14:31:50.227"/>
+  </Package>
+</DiamondModule>
