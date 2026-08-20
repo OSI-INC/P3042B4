@@ -187,7 +187,7 @@ architecture behavior of main is
 	constant indicators_addr : integer := 32; -- Indicator lamp array (Write)
 	constant indicator_low : integer := 1; -- Low index of CPU-controlled indicators
 	constant indicator_hi : integer := 15; -- High index of CPU-controlled indicators
-	constant msb_id_addr : integer := 48; -- Selected Message ID (Read)
+	constant msb_ch_addr : integer := 48; -- Selected Message ID (Read)
 	constant msb_hi_addr : integer := 49; -- Selected Message HI Data Byte (Read)
 	constant msb_lo_addr : integer := 50; -- Selected Message LO Data Byte (Read)
 	constant msb_pwr_addr : integer := 51; -- Selected Message Power (Read)
@@ -647,7 +647,7 @@ begin
 				when dpid_addr => 
 					cpu_data_in <= (others => '0');
 				when tf_sr_addr => cpu_data_in <= tf_in;
-				when msb_id_addr => cpu_data_in <= msb_out(39 downto 32);
+				when msb_ch_addr => cpu_data_in <= msb_out(39 downto 32);
 				when msb_hi_addr => cpu_data_in <= msb_out(31 downto 24);
 				when msb_lo_addr => cpu_data_in <= msb_out(23 downto 16);
 				when msb_pwr_addr => cpu_data_in <= msb_out(15 downto 8);
@@ -723,7 +723,7 @@ begin
 	end process;
 	
 	-- The Interrupt_Controller provides the interrupt signal to the CPU in response to
-	-- sensor and timer events. By default, at power-up, all interrupts are maske.
+	-- sensor and timer events. By default, at power-up, all interrupts are masked.
 	Interrupt_Controller : process (RCK,PCK,RESET) is
 	begin
 		-- Interrupt Timer One, counting up from zero to irq_tmr1_max with period RCK. It 
@@ -1061,11 +1061,11 @@ begin
 	-- antenna messages in the Message Selector Buffer. As messages 
 	-- become available in the Detector Module Buffer, the selector 
 	-- reads them out and compares them to its previous message. If
-	-- If the new message is from a different identifier, or has a
+	-- If the new message is from a different channel, or has a
 	-- different sample value, the selector stores the previous message
 	-- in its own buffer. The absence of a previous message we indicate
 	-- by setting the previous message record to all zeros. If the
-	-- new message has the same identifier and sample value, the
+	-- new message has the same channel number and sample value, the
 	-- selector checks its power. If the new message is more powerful
 	-- the selector overwrites the previous message. Otherwise it
 	-- discards the new message. When the Detector Module Buffer is

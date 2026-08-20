@@ -30,16 +30,16 @@ const comm_status_addr 0x0E16 ; Communication Status Register (Read)
 const dpcr_addr 0x0E17 ; Display Panel Configuration Request (Write)
 const dpod_addr 0x0E18 ; Display Panel Output Data (Write)
 const dpid_addr 0x0E19 ; Display Panel Input Data (Read)
-const dmb_read_addr 0x0E1A ; Detector Module Buffer Read (Write)
+const msb_read_addr 0x0E1A ; Detector Module Buffer Read (Write)
 const irq_tmr2_max_addr 0x0E1B ; Interrupt Timer Two Period Minus One (Read/Write)
 const irq_tmr2_addr 0x0E1C ; Interrupt Counter Value (Read)
 const fv_addr 0x0E1D ; Firmware Version number (Read)
 const zero_indicator_addr 0x0E20 ; Zero channel indicator (Write)
-const dmb_id_addr 0x0E30 ; Detector Module ID (Read)
-const dmb_hi_addr 0x0E31 ; Detector Module HI Data Byte (Read)
-const dmb_lo_addr 0x0E32 ; Detector Module LO Data Byte (Read)
-const dmb_pwr_addr 0x0E33 ; Detector Module Power (Read)
-const dmb_an_addr 0x0E34 ; Detector Module Antenna Number (Read)
+const msb_ch_addr 0x0E30 ; Detector Module ID (Read)
+const msb_hi_addr 0x0E31 ; Detector Module HI Data Byte (Read)
+const msb_lo_addr 0x0E32 ; Detector Module LO Data Byte (Read)
+const msb_pwr_addr 0x0E33 ; Detector Module Power (Read)
+const msb_an_addr 0x0E34 ; Detector Module Antenna Number (Read)
 const tf_sr_addr 0x0E35 ; Transmitting Feedthrough Status Register (Read)
 const tf_op_addr 0x0E36 ; Transmitting Feedthrough Opcode (Write)
 const tf_n_addr 0x0E37 ; Transmitting Feedthrough Operand (Write)
@@ -66,10 +66,10 @@ const int_mrdy_mask 0x02
 const int_lamps_mask 0x08
 const int_dmerr_mask 0x04
 const int_unused_mask 0xF0
-const valid_id_mask 0x0F
+const valid_ch_mask 0x0F
 const config_bit_mask 0x01
 const dpirdy_bit_mask 0x10
-const dmbrdy_bit_mask 0x20
+const msbrdy_bit_mask 0x20
 const dmerr_bit_mask 0x40
 const mrdy_bit_mask 0x80
 
@@ -294,8 +294,8 @@ ld (irq_tmr2_max_addr),A
 ld A,select_all_code    
 ld (irq_reset_addr),A  
 
-; Unmask the timer and lamp interrupts. Interrupts are currently disabled 
-; by the I flag. Leave the DMBRDY and second timer interrupts disabled.
+; Unmask the timestamp and lamp interrupts. Interrupts are currently disabled 
+; by the I flag. 
 ld A,int_ts_mask
 or A,int_lamps_mask            
 ld (irq_mask_addr),A  
@@ -335,10 +335,11 @@ main:
 ; antenna number to the main message buffer.
 ; ---------------------------------------------------------------
 
-; Check the Detector Module Buffer Ready (DMBRDY) flag. If it's not 
-; set, we skip message reading.
+; Check the Message Selector Buffer Ready (MSBRDY) flag, which is
+; actually the inverse of MSBEMPTy. If the ready flag is not set,
+; we skip message reading.
 ld A,(comm_status_addr)
-and A,dmbrdy_bit_mask
+and A,msbrdy_bit_mask
 jp z,main_no_msg
 
 ; Generate a rising edge on tp_reg(0) to indicate the start of
@@ -347,17 +348,19 @@ ld A,(test_point_addr)
 or A,0x01                    
 ld (test_point_addr),A   
 
-; Read the new message out of the message buffer. The new message
-; will be available in the dmb location immediately after we write
-; to the Detector Module Buffer Read location.
-ld (dmb_read_addr),A
+; Read the new message out of the message selector buffer. The 
+; new message will be available in the msb locations immediately 
+; after we write to the Detector Module Buffer Read location.
+ld (msb_read_addr),A
 
-; Reset the channel indicator timer. We use the lower four bits of
-; the channel ID to select one of the fifteen indicator lamps.
+; Read the message channel number and use it to reset the
+; channel indicator timer. We use the lower four bits of
+; the channel number to select one of the fifteen indicator 
+; lamps.
 ld HL,zero_channel_timer
 push H
-ld A,(dmb_id_addr)
-and A,valid_id_mask
+ld A,(msb_ch_addr)
+and A,valid_ch_mask
 push A
 pop IX
 ld A,activity_linger
@@ -370,7 +373,7 @@ ld (IX),A
 ; stash the antenna socket number in a register.
 ld HL,zero_index_antenna
 push H
-ld A,(dmb_an_addr)
+ld A,(msb_an_addr)
 push A
 pop IX
 ld A,(IX)
@@ -390,11 +393,11 @@ pop C
 ; the message buffer because we have at least one "ld A,(nn)" between each
 ; write, and these take four clock cycles.
 seti
-ld A,(dmb_id_addr)
+ld A,(msb_ch_addr)
 ld (msg_write_addr),A
-ld A,(dmb_hi_addr)
+ld A,(msb_hi_addr)
 ld (msg_write_addr),A
-ld A,(dmb_lo_addr)
+ld A,(msb_lo_addr)
 ld (msg_write_addr),A
 ld A,(irq_bits_addr)
 and A,0x01
@@ -405,7 +408,7 @@ save_msg_ts:
 ld A,(irq_tmr1_addr)
 save_msg_stts:
 ld (msg_write_addr),A
-ld A,(dmb_pwr_addr)
+ld A,(msb_pwr_addr)
 ld (msg_write_addr),A
 push C
 pop A
@@ -561,7 +564,7 @@ ld (test_point_addr),A
 ; ------------------------------------------------------------------
 ; Determine which interrupt request bit is set, and act upon it in
 ; order of highest to lowest priority. If we don't recognise the 
-; interrupt, we reset all the unknown interrupts.
+; interrupt, we reset all interrupts.
 ;-------------------------------------------------------------------
 ld A,(irq_bits_addr)
 and A,int_ts_mask
@@ -569,10 +572,7 @@ jp nz,int_ts
 ld A,(irq_bits_addr)
 and A,int_lamps_mask
 jp nz,int_lamps
-ld A,(irq_bits_addr)
-and A,int_dmerr_mask
-jp nz,int_dmerr
-ld A,int_unused_mask
+ld A,select_all_code
 ld (irq_reset_addr),A  
 jp int_done
 
@@ -669,22 +669,6 @@ jp nz,ch_tmr_start
 int_lamps_done:
 ld A,int_lamps_mask             
 ld (irq_reset_addr),A  
-jp int_done
-
-; --------------------------------------------------------
-; If we are acting on the detector module error interrupt,
-; we reset the detector modules and the available message 
-; counter by writing to the detectcor module reset location.
-; --------------------------------------------------------
-int_dmerr:
-ld A,0x01              ; Set bit zero
-ld (dm_reset_addr),A   ; and write to DMRST.
-ld A,dmrst_length      ; Load reset pulse length
-dly A                  ; and wait.
-ld A,0x00              ; Clear bit zero
-ld (dm_reset_addr),A   ; and write to DMRST.
-ld A,int_dmerr_mask    ; Load the dmerr mask and use
-ld (irq_reset_addr),A  ; to reset the dmerr interrupt bit.
 jp int_done
 
 ; --------------------------------------------------------
