@@ -61,8 +61,8 @@ entity main is
 
 -- Version numbers.
 	constant hardware_id : integer := 42;
-	constant hardware_version : integer := 2;
-	constant firmware_version : integer := 7;
+	constant hardware_version : integer := 1;
+	constant firmware_version : integer := 1;
 
 -- Configuration of OSR8.
 	constant prog_addr_len : integer := 11;
@@ -327,7 +327,9 @@ begin
 	-- and Relay. The CPU initiates a reset by writing to its reset location
 	-- in memory. The EMM intitiates a reset by asserting !RST. The Relay, 
 	-- which is the LWDAQ server running on the EMM, initiates reset by 
-	-- writing to the control space reset location.
+	-- writing to the control space reset location. The CPU can, in addition,
+	-- reset the detector modules by writing to its detector module reset
+	-- register, which asserts DMRST_BY_CPU.
 	Reset_Arbitrator : process (CK,SCK) is
 	constant dp_init_len : integer := 63;
 	variable dp_count : integer range 0 to dp_init_len;
@@ -354,12 +356,15 @@ begin
 			else
 				next_state := state + 1;
 			end if;
-			if (state = 0) then
-				RESET <= '0';
-				DMRST_pin <= 'Z';
-			else
+			if (state /= 0) then
 				RESET <= '1';
+			else
+				RESET <= '0';
+			end if;
+			if (state /= 0) or DMRST_BY_CPU then
 				DMRST_pin <= '1';
+			else
+				DMRST_pin <= '0';
 			end if;
 			state := next_state;
 		end if;

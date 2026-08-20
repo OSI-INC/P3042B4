@@ -7,7 +7,7 @@
 
 ; Receiver type code, to which we add the firmware version encoded
 ; in the VHDL file to generate the receiver version. 
-const receiver_type 120 ; For A3042 receivers.
+const receiver_type 60 ; For A3042B4 receivers.
 
 ; Control Register Addresses.
 const irq_bits_addr 0x0E00 ; Interrupt Request Bits (Read)
@@ -92,19 +92,19 @@ const num_detectors 16
 const index_1  1 
 const index_2  2 
 const index_3  3 
-const index_4  5 
-const index_5  7 
-const index_6  10
-const index_7  9
-const index_8  12
-const index_9  16
-const index_10 15
-const index_11 13
-const index_12 14
-const index_13 11
-const index_14 8
-const index_15 6
-const index_16 4
+const index_4  4 
+const index_5  5 
+const index_6  6
+const index_7  7
+const index_8  8
+const index_9  9
+const index_10 10
+const index_11 11
+const index_12 12
+const index_13 13
+const index_14 14
+const index_15 15
+const index_16 16
 
 ; Timinig Constants. RCK is 32.768 kHz, PCK is 20 MHz.
 const rck_per_ts 255 ; RCK periods per timestamp interrupt minus one
@@ -235,23 +235,16 @@ ld A,0x00
 ld (clock_hi),A
 ld (clock_lo),A
 
-; If we are initializing after a Top-Level or Mid-Level reset, the detector modules will
-; already be reset, but if we are re-booting the Controller by jumping to the initialize
-; routine, we need to assert DMRST to reset the detector modules and the display panel,
-; so we do that now.
+; Assert DMRST to reset the detector modules for a period of time, then clear it.
 ld A,0x01
 ld (dm_reset_addr),A
 ld A,dmrst_length
 dly A
-
-; We just set DMRST in our code, but even if we had not done so, we would still have to
-; clear it now, because a Top-Level or Mid-Level reset will set DMRST and leave it set
-; after the reset is over.
 ld A,0x00
 ld (dm_reset_addr),A
 
-; Assert Detector Module Configure (DMCFG) for enough time to allow the detector modules 
-; to figure out their place in the daisy chain.
+; Assert Detector Module Configure (DMCFG) for enough time to allow the detector 
+; modules to figure out their place in the daisy chain.
 ld A,0x01
 ld (dm_config_addr),A
 ld A,dmcfg_length
@@ -308,7 +301,8 @@ or A,int_lamps_mask
 ld (irq_mask_addr),A  
 
 ; Reset the device job register, which tells the Relay that the Controller
-; is ready for further commands. Any write to the reset location will do.
+; is ready for further commands. Any write to the job register reset location 
+; will do.
 ld (relay_djr_rst_addr),A
 
 ; Falling edge on tp_reg(2).
@@ -316,7 +310,7 @@ ld A,(test_point_addr)
 and A,0xFB                  
 ld (test_point_addr),A   
 
-; Enable interrupts to start the data acquisition.
+; Clear the interrupt disable flag to start the data acquisition.
 clri
 
 ; Set the main loop counter to one so that all tasks will be executed in first
@@ -335,11 +329,10 @@ main:
 ; ---------------------------------------------------------------
 ; Read any available message from the Message Selector Buffer. 
 ; These messages arrive in the buffer after the Message Selector
-; state machine has performed its duplicate elimination. We read
-; a new message, send a notification to the display panel, update
-; the channel indicator timer, swap the daisy chain identifier for
-; an antenna connector number, and write the message with the 
-; swapped antenna number to the main message buffer.
+; has performed duplicate elimination. We read a new message, update 
+; the channel indicator timer, swap the daisy chain identifier for 
+; an antenna connector number, and write the message with the swapped 
+; antenna number to the main message buffer.
 ; ---------------------------------------------------------------
 
 ; Check the Detector Module Buffer Ready (DMBRDY) flag. If it's not 
@@ -359,14 +352,6 @@ ld (test_point_addr),A
 ; to the Detector Module Buffer Read location.
 ld (dmb_read_addr),A
 
-; Transmit a notification to the display panel. The eight-bit notification 
-; consists of an operation code in the top four bits and the lower four 
-; bits of the message identifier. 
-ld A,(dmb_id_addr)
-and A,valid_id_mask
-or A,dp_opcode_msg
-ld (dpod_addr),A
-
 ; Reset the channel indicator timer. We use the lower four bits of
 ; the channel ID to select one of the fifteen indicator lamps.
 ld HL,zero_channel_timer
@@ -379,8 +364,8 @@ ld A,activity_linger
 ld (IX),A
 
 ; Swap the daisy chain index, which we have so far been using as
-; our antenna number, for the antenna input number on the TC
-; enclosure. During initialization, we set up a table specifying
+; our antenna number, for the antenna input number on the back of
+; the enclosure. During initialization, we set up a table specifying
 ; the mapping from index to antenna. We use that table now. We
 ; stash the antenna socket number in a register.
 ld HL,zero_index_antenna
@@ -439,8 +424,9 @@ main_no_msg:
 ; ---------------------------------------------------------------
 ; Decrement the main loop counter, which we use to manage tasks 
 ; that require attention less often than message readout. If the
-; counter is zero, jump to the start of the main loop. Otherwise,
-; continue with infrequent tasks.
+; counter is not zero, jump to the start of the main loop.
+; Otherwise, refresh the counter before moving on to infrequent 
+; tasks.
 ; ---------------------------------------------------------------
 ld A,(main_cntr)
 dec A
@@ -448,51 +434,6 @@ ld (main_cntr),A
 jp nz,main
 ld A,slow_task_skip
 ld (main_cntr),A
-
-; ---------------------------------------------------------------
-; Manage communication with the display panel. We alternate between
-; transmitting a serial instruction to the display panel and 
-; reading an instruction from the display panel.
-; ---------------------------------------------------------------
-main_dp:
-
-; Transmit the lower four bits of the communication status register
-; to the display panel. We combine these four bits with the communication
-; op-code and write to dpod_addr, which sets the data bits and initiates 
-; transmission. 
-ld A,(comm_status_addr)
-and A,0x0F
-or A,dp_opcode_comm
-ld (dpod_addr),A
-
-; Check to see if there is a new byte waiting from the display panel. If
-; not, jump to next task.
-ld A,(comm_status_addr)
-and A,dpirdy_bit_mask
-jp z,main_dp_done
-
-; Read the new byte received from the display panel and store in C.
-ld A,(dpid_addr)
-push A
-pop C
-
-; Check the opcode. If not one we recognise, go to message handler.
-and A,0xF0
-sub A,dp_opcode_sw 
-jp nz,main_dp_done
-
-; Check configuration bit state and update the configuration flag
-; in the controller.
-push C
-pop A
-and A,config_bit_mask
-jp z,main_dp_config
-ld A,0x01
-main_dp_config:
-ld (dpcr_addr),A
-
-; Done with display panel communication.
-main_dp_done:
 
 ; ---------------------------------------------------------------
 ; Check the Device Job Register. If it's not zero, take action and 
