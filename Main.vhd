@@ -6,6 +6,9 @@
 -- V1.2, 19-AUG-26: Adapted and tested. EEM working. Download of 
 -- telemetry data working. Indicator lights and switches working.
 
+-- V1.3, 21-AUG-26: Command transmission and digital input-output
+-- imported from P3042TF firmware, working and tested.
+
 -- Global constants and types.  
 library ieee;  
 use ieee.std_logic_1164.all;
@@ -15,28 +18,21 @@ entity main is
 	port (
 		MCK : in std_logic; -- Master (10 MHz) Clock
 		RCK_in : in std_logic; -- Reference (32.768 kHz) Clock
-		
 		cont_data : inout std_logic_vector(7 downto 0);
 		cont_addr : in std_logic_vector(7 downto 0);
 		CWR_in : in std_logic;
 		CDS_in : in std_logic;
-		
 		buff_addr : out std_logic_vector(20 downto 0);
 		buff_data : inout std_logic_vector(7 downto 0);
 		REN_not : out std_logic;
 		RWE_not : out std_logic;
-		
 		RST_not : in std_logic;
-		
 		indicators : out std_logic_vector(1 to 19);
-		
 		SHOW_not : in std_logic; -- Show all indicator lamps
 		HIDE_not : in std_logic; -- Hide all indicator lamps
 		CONFIG_not : in std_logic; -- Configure
-		
 		DSU : out std_logic; -- Data Strobe Upstream
 		dub : in std_logic_vector(7 downto 0); -- Data Upstream Bus
-		
 		DMRST_pin : inout std_logic; -- Detector Module Reset (DC0)
 		DMRC : out std_logic; -- Detector Module Read Control (DC1)
 		DMERR_in : in std_logic; -- Detecor Module Error (DC2)
@@ -45,17 +41,12 @@ entity main is
 		DC5 : in std_logic; -- Unused (DC5)
 		DC6 : in std_logic; -- Unused (DC6)
 		DMCK : out std_logic; -- Demodulator Clock (DC7)
-		
 		TXON : out std_logic; -- On for Command Transmitters
-		
 		EN1_not, EN2_not : out std_logic; -- Enable Digital IO Output
 		DX1, DX2 : in std_logic; -- Digital Input Data
 		Q1, Q2 : out std_logic; -- Digital Output
-		
-		HDW : in std_logic; -- Hardware Identifier Bit
-		
+		HDW : in std_logic; -- Hardware Identifier Bi
 		TP1, TP2, TP3, TP4 : out std_logic; -- Test Points
-		
 		RB2, RB5 : in std_logic -- Spare EEM Connections
 	);	
 
@@ -626,8 +617,11 @@ begin
 			and (top_bits < cpu_ram_base+cpu_ram_range)
 			and CPUWR);
 		
-		-- The CPU data in we select with the following combinatorial 
-		-- multiplexer.
+		-- The CPU input data we set with the following combinatorial 
+		-- multiplexer. If our multiplexer does not specify a value 
+		-- for any or all bits in the input data, we set the bit to
+		-- zero.
+		cpu_data_in <= (others => '0');
 		case top_bits is
 		when cpu_ram_base to (cpu_ram_base+cpu_ram_range-1) => 
 			cpu_data_in <= cpu_ram_out;
@@ -663,10 +657,9 @@ begin
 				when msb_lo_addr => cpu_data_in <= msb_out(23 downto 16);
 				when msb_pwr_addr => cpu_data_in <= msb_out(15 downto 8);
 				when msb_an_addr => cpu_data_in <= msb_out(7 downto 0);
-				when others => cpu_data_in <= max_data_byte;
+				when others => cpu_data_in <= (others => '0');
 			end case;
-		when others =>
-			cpu_data_in <= max_data_byte;
+		when others => cpu_data_in <= (others => '0');
 		end case;
 		
 		-- We use the falling edge of PCK to write to registers and to initiate sensor 
