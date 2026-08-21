@@ -41,7 +41,7 @@ entity main is
 		DMRC : out std_logic; -- Detector Module Read Control (DC1)
 		DMERR_in : in std_logic; -- Detecor Module Error (DC2)
 		MRDY_in : in std_logic; -- Message Ready Flag (DC3)
-		DMCFG : inout std_logic; -- Detector Module Show Lamps (DC4)
+		DMCFG : inout std_logic; -- Detector Module Configure (DC4)
 		DC5 : in std_logic; -- Unused (DC5)
 		DC6 : in std_logic; -- Unused (DC6)
 		DMCK : out std_logic; -- Demodulator Clock (DC7)
@@ -70,6 +70,18 @@ entity main is
 	constant ram_addr_len : integer := 12;
 	constant start_pc : integer := 0;
 	constant interrupt_pc : integer := 3;
+	
+-- Instruction Op-Codes
+	constant rf_off_op  : integer := 0; -- Turn off the RF transmitter.
+	constant rf_on_op   : integer := 1; -- Turn on the RF transmitter.
+	constant rf_xmit_op : integer := 2; -- Transmit a command byte.
+	constant tm_test_op : integer := 3; -- Transmitter Module test.
+	constant dio_en_op  : integer := 8; -- Enable or disable digital outputs.
+	constant dio_set_op : integer := 9; -- Set or clear digital outputs.
+	
+-- Configuration Constants
+	constant start_pulse_len : integer := 164; -- RCK periods for start pulse.
+	constant stop_pulse_len : integer := 16; -- RCK periods for stop bit.	
 end;
 
 architecture behavior of main is
@@ -100,15 +112,25 @@ architecture behavior of main is
 	signal UPLOAD : boolean; -- Uploading To Relay
 	signal EMPTY : boolean; -- Message Buffer Empty
 	signal CONFIG : boolean; -- Reconfiguration Requested
+	signal HIDE : boolean := false;
+	signal SHOW : boolean := false;
 	
--- Transmitting Feedthrough Interface;
-	signal TFXWR : std_logic; -- Transmitting Feedthrough Transmit Write
-	signal TFXRD : std_logic; -- Transmitting Feedthrough Transmit Read
-	signal TFXEMPTY : std_logic; -- Transmitting Feedthrough Transmit Buffer Empty
-	signal TFXFULL : std_logic; -- Transmitting Feedthrough Transmit Buffer Full
-	signal TFRA : std_logic; -- Transmitting Feedthrough Receive Active
-	signal tf_out_opcode, tf_in, tf_in_sr : std_logic_vector(7 downto 0);
-	signal tf_out : std_logic_vector(15 downto 0);
+-- Command Buffer
+	signal CBWR : std_logic; -- Command Buffer Write
+	signal CBRD : std_logic; -- Command Buffer Read
+	signal CBEMPTY : std_logic; -- Command Buffer Empty
+	signal CBFULL : std_logic; -- Command Buffer Full
+	signal cb_out : std_logic_vector(15 downto 0); -- Command Buffer Output
+	signal cb_in_lo : std_logic_vector(7 downto 0); -- Command Buffer Input LO
+
+-- Command Processing
+	signal CTXI : boolean; -- Command Transmit Initiate
+	signal CTXD : boolean; -- Command Transmit Done
+	signal SPI : boolean; -- Start Pulse Initiate
+	signal SPD : boolean; -- Start Pulse Done
+	signal RFTX : boolean; -- Radio Frequency Transmit Bit
+	signal RFSP : boolean; -- Radio Frequency Start Pulse
+	signal TMTEST : boolean; -- Transmit Module Test
 
 -- Message Buffer
 	signal MWRS : boolean; -- Message Write Strobe
@@ -177,9 +199,6 @@ architecture behavior of main is
 	constant relay_djr_rst_addr : integer := 17; -- Reset Device Job Register (Write)
 	constant relay_der_addr : integer := 18; -- Relay Device Element Register (Read)
 	constant comm_status_addr: integer := 22; -- Communication Status Register (Read)
-	constant dpcr_addr : integer := 23; -- Display Panel Configuration Request (Write)
-	constant dpod_addr : integer := 24; -- Display Panel Output Data (Write)
-	constant dpid_addr : integer := 25; -- Display Panel Input Data (Read)
 	constant msb_read_addr : integer := 26; -- Message Selector Buffer Read (Write)
 	constant irq_tmr2_max_addr : integer := 27; -- Timer Two Period Minus One (Read/Write)
 	constant irq_tmr2_addr : integer := 28; -- Timer Two value (Read)
@@ -192,9 +211,9 @@ architecture behavior of main is
 	constant msb_lo_addr : integer := 50; -- Selected Message LO Data Byte (Read)
 	constant msb_pwr_addr : integer := 51; -- Selected Message Power (Read)
 	constant msb_an_addr : integer := 52; -- Selected Message Antenna Number (Read)
-	constant tf_sr_addr : integer := 53; -- Transmitting Feedthrough Status Register (Read)
-	constant tf_op_addr : integer := 54; -- Transmitting Feedthrough Opcode (Write)
-	constant tf_n_addr : integer := 55; -- Transmitting Feedthrough Operand (Write)
+	constant di_addr : integer := 53; -- Digital Input Register (Read)
+	constant cb_lo_addr : integer := 54; -- Command Word LO byte (Write)
+	constant cb_hi_addr : integer := 55; -- Command Word HI byte (Write)
 	
 	-- Relay Interface Registers.
 	signal cont_djr : std_logic_vector(7 downto 0); -- Device Job Register
@@ -219,10 +238,6 @@ architecture behavior of main is
 	constant cont_fifo_ds_addr : integer := 62; -- Fifo Data Strobe (Read/Write)
 	constant cont_fifo_rd_addr : integer := 63; -- Fifo Read Portal (Read)
 			
--- Indicator signals.
-	signal HIDE : boolean := false;
-	signal SHOW : boolean := false;
-	
 -- Detector Module Buffer Interface
 	signal DMBWR : std_logic; -- Detector Module Buffer Write
 	signal DMBRD : std_logic; -- Detector Module Buffer Read
@@ -336,10 +351,6 @@ begin
 	constant rst_len : integer := 65535;
 	variable state, next_state : integer range 0 to rst_len;
 	begin
-				
-		-- We generate a reset when any of the signals !RST,
-		-- RST_BY_CPU, or RST_BY_RELAY are asserted. The !RST
-		-- signal appears in our input list as RST_not.
 		if rising_edge(CK) then
 			if state = 0 then
 				if RST_BY_CPU or RST_BY_RELAY or (RST_not = '0') then 
@@ -538,22 +549,22 @@ begin
 			CK => PCK
 		);
 		
--- The Transmitting Feedthrough Output Buffer (TFO Buffer) buffer is 
--- where the CPU writes sixteen-bit words it wants the Transmitting-- Feedthrough Transmitter to serialize. The top eight bits are an
--- operation code, the bottom eight bits are an operand.
-	TFO_Buffer : entity FIFO16
+-- The Command Buffer where the CPU writes sixteen-bit LWDAQ command
+-- words it receives from LWDAQ command transmit jobs. These will be
+-- read out in order by the Command Processor.
+	Command_Buffer : entity FIFO16
 		port map (
 			Data(15 downto 8) => cpu_data_out,
-			Data(7 downto 0) => tf_out_opcode,
+			Data(7 downto 0) => cb_in_lo,
 			WrClock => not PCK,
 			RDClock => not SCK,
-			WrEn => TFXWR,
-			RdEn => TFXRD,
+			WrEn => CBWR,
+			RdEn => CBRD,
 			Reset => RESET,
 			RPReset => RESET,
-			Q => tf_out,
-			Empty => TFXEMPTY,
-			Full => TFXFULL
+			Q => cb_out,
+			Empty => CBEMPTY,
+			Full => CBFULL
 		);
 
 -- The Detector Module Buffer is where the Detector Module Reader puts
@@ -644,9 +655,9 @@ begin
 					cpu_data_in(5) <= not MSBEMPTY;
 					cpu_data_in(6) <= DMERR;
 					cpu_data_in(7) <= MRDY;
-				when dpid_addr => 
-					cpu_data_in <= (others => '0');
-				when tf_sr_addr => cpu_data_in <= tf_in;
+				when di_addr => 
+					cpu_data_in(0) <= DX1;
+					cpu_data_in(1) <= DX2;
 				when msb_ch_addr => cpu_data_in <= msb_out(39 downto 32);
 				when msb_hi_addr => cpu_data_in <= msb_out(31 downto 24);
 				when msb_lo_addr => cpu_data_in <= msb_out(23 downto 16);
@@ -680,7 +691,7 @@ begin
 			DJRRST <= false;
 			RST_BY_CPU <= false;
 			DMRST_BY_CPU <= true;
-			TFXWR <= '0';
+			CBWR <= '0';
 			MSBRD <= '0';
 			DMCFG <= '0';
 			for i in 1 to 15 loop indicator_control(i) <= '0'; end loop;
@@ -688,7 +699,7 @@ begin
 			irq_rst <= zero_data_byte;
 			irq_set <= zero_data_byte;
 			DJRRST <= false;
-			TFXWR <= '0';
+			CBWR <= '0';
 			MSBRD <= '0';
 			if MWRACK then MWRS <= false; end if;
 			if CPUDS then 
@@ -712,8 +723,8 @@ begin
 							when indicators_addr + 1 to indicators_addr + 15 =>
 								indicator_control(to_integer(unsigned(cpu_addr(3 downto 0)))) 
 									<= cpu_data_out(0);
-							when tf_op_addr => tf_out_opcode <= cpu_data_out;
-							when tf_n_addr => if (TFXFULL = '0') then TFXWR <= '1'; end if;
+							when cb_lo_addr => cb_in_lo <= cpu_data_out;
+							when cb_hi_addr => if (CBFULL = '0') then CBWR <= '1'; end if;
 							when msb_read_addr => MSBRD <= '1';
 						end case;
 					end if;
@@ -883,7 +894,8 @@ begin
 				when cont_fv_addr =>
 					cont_data <= std_logic_vector(to_unsigned(firmware_version,8));
 				when cont_di_lo => 
-					cont_data <= tf_in;
+					cont_data(0) <= DX1;
+					cont_data(1) <= DX2;
 				when cont_cfsw_addr => -- The Relay looks for a zero to configure.
 					cont_data <= (others => '0');
 					cont_data(0) <= to_std_logic(not CONFIG);
@@ -1139,50 +1151,230 @@ begin
 		
 		MSBSY <= to_std_logic(state /= mss_idle);
 	end process;
-	
-	-- The Lamp Inhibitor looks at the HIDE switch and turns on or off
-	-- the front edge flashing lamps and the detector module lamps. It
-	-- does not reset with the RESET signal, but only on power-up. The
-	-- HIDE and SHOW buttons work so long as RCK is running and we have
-	-- power. No malfunction of the CPU program can stop them. No failure
-	-- of the logic chip's PLL or of the CK oscillator will stop them.
-	Lamp_Inhibitor : process (RCK_in,RESET) is
+	-- The Command Processor reads sixteen-bit words out of the
+	-- Command Buffer, decodes the opcode in the lower seven
+	-- bits, uses the upper eight bits as the operand, and executes
+	-- each instruction. Bit seven, the eighth bit, is always one for
+	-- a valid opcode.
+	Command_Processor : process (SCK,RESET) is 
+	variable state : integer range 0 to 15;
+	begin
+		if (RESET = '1') then
+			state := 0;
+			CTXI <= false;
+			SPI <= false;
+			CBRD <= '0';
+			EN1_not <= '1';
+			EN2_not <= '1';
+			Q1 <= '0';
+			Q2 <= '0';
+			TMTEST <= false;
+		elsif rising_edge(SCK) then
+			case state is
+				-- Detect instruction waiting, read instruction.
+				when 0 => 
+					CTXI <= false;
+					SPI <= false;
+					if (CBEMPTY = '0') then
+						CBRD <= '1';
+						state := 1;
+					else 
+						CBRD <= '0';
+						state := 0;
+					end if;
+				-- Examine the opcode in the lower eight bits of the
+				-- instruction. Start execution or abort.
+				when 1 =>
+					TMTEST <= false;
+					CBRD <= '0';
+					case to_integer(unsigned(cb_out(6 downto 0))) is
+						when rf_off_op =>
+							state := 0;
+						when rf_on_op =>
+							SPI <= true;
+							state := 2;
+						when rf_xmit_op =>
+							CTXI <= true;
+							state := 4;
+						when tm_test_op =>
+							TMTEST <= true;
+							state := 0;
+						when dio_en_op =>
+							EN1_not <= not cb_out(8);
+							EN2_not <= not cb_out(9);
+							state := 0;
+						when dio_set_op =>
+							Q1 <= cb_out(8);
+							Q2 <= cb_out(9);
+							state := 0;
+						when others =>
+							state := 0;
+					end case;
+				when 2 =>
+					CTXI <= false;
+					SPI <= true;
+					if SPD then
+						state :=3;
+					else
+						state := 2;
+					end if;
+				when 3 =>
+					CTXI <= false;
+					SPI <= false;
+					if not SPD then
+						state := 0;
+					else
+						state := 3;
+					end if;
+				when 4 =>
+					CTXI <= true;
+					SPI <= false;
+					if CTXD then 
+						state := 5;
+					else
+						state := 4;
+					end if;
+				when 5 =>
+					CTXI <= false;
+					SPI <= false;
+					if not CTXD then
+						state := 0;
+					else 
+						state := 5;
+					end if;
+				when others =>
+					CTXI <= false;
+					SPI <= false;
+					state := 0;
+			end case;		
+		end if;
+	end process;
+
+	-- The Command Transmitter transmits eight bits of command content
+	-- by means of a start bit, eight data bits, and two stop bits. It
+	-- also manages the start pulse by responding to Start Pulse Intiate
+	-- (SPI) and returning Start Pulse Done (SPD) after a 5-ms start 
+	-- pulse and a 480-us stop period. The stop period guarantees a
+	-- 500-us delay between the end of the start pulse and the start bit
+	-- of the first command byte.
+	Command_Transmitter : process (RCK,RESET) is
+	variable state, next_state : integer range 0 to 63;
+	variable count : integer range 0 to 255;
+	begin
+		if (RESET = '1') then
+			state := 0;
+			count := 0;
+			RFTX <= false;
+			RFSP <= false;
+			CTXD <= false;
+			SPD <= false;
+		elsif rising_edge(RCK) then
+			next_state := state + 1;
+			CTXD <= false;
+			SPD <= false;
+			case state is 
+				when 0 => 
+					RFTX <= false;
+					if not CTXI then 
+						next_state := 0; 
+					end if;
+				when 1 to 4 =>
+					RFTX <= true;
+				when 5 to 8 => RFTX <= cb_out(15) = '1';
+				when 9 to 12 => RFTX <= cb_out(14) = '1';
+				when 13 to 16 => RFTX <= cb_out(13) = '1';
+				when 17 to 20 => RFTX <= cb_out(12) = '1';
+				when 21 to 24 => RFTX <= cb_out(11) = '1';
+				when 25 to 28 => RFTX <= cb_out(10) = '1';
+				when 29 to 32 => RFTX <= cb_out(9) = '1';
+				when 33 to 36 => RFTX <= cb_out(8) = '1';
+				when 37 to 52 => RFTX <= false;
+				when others =>
+					RFTX <= false;
+					CTXD <= true;
+					if not CTXI then 
+						next_state := 0; 
+					else
+						next_state := state;
+					end if;
+			end case;
+			state := next_state;
+			
+			if (count > 0) and (count < start_pulse_len) then
+				RFSP <= true;
+			else
+				RFSP <= false;
+			end if;
+			
+			if (count = 0) then
+				if SPI then
+					count := 1;
+				else 
+					count := 0;
+				end if;
+			elsif (count = start_pulse_len + stop_pulse_len) then
+				SPD <= true;
+				if not SPI then
+					count := 0;
+				else
+					count := count;
+				end if;
+			else
+				count := count + 1;
+			end if;
+		end if;
+		
+		TXON <= to_std_logic(RFTX or RFSP or TMTEST); 
+	end process;
+
+	-- The Lamp Inhibitor debounces the HIDE switch input, which is
+	-- HIDE_not, and uses it to toggle the HIDE flag. When the HIDE
+	-- flag is set, the flashing lights on the front panel are 
+	-- disabled. The lamps on the detector modules are unaffected. 
+	-- When SHOW is pressed, the front panel lamps turn on regardless 
+	-- of HIDE. The HIDE flag is cleared on power-up, but not on RESET. 
+	-- The HIDE and SHOW buttons work so long as RCK is running and we 
+	-- have power. No malfunction of the CPU program can stop them. No
+	-- failure of the logic chip's PLL or of the CK oscillator will stop 
+	-- them.
+	Lamp_Inhibitor : process (RCK,RESET) is
 	constant wait_count : integer := 4095;
 	variable debounce_state : integer range 0 to wait_count := 0;
 	begin
-		if rising_edge(RCK_in) then
-			HIDE <= (HIDE_not = '0');
-			indicators(19) <= to_std_logic(not HIDE);
-			SHOW <= (SHOW_not = '0');
-			indicators(18) <= to_std_logic(not SHOW); 
-		end if;
-		
-		-- Set the indicator lamps according to the indicator control
-		-- and the HIDE and SHOW signals. The indicator is on when the
-		-- indicator output is LO.
-		for i in 1 to 15 loop
-			if SHOW then
-				indicators(i) <= '0';
-			elsif (indicator_control(i) = '1') and (not HIDE) then
-				indicators(i) <= '0';
-			else 
-				indicators(i) <= '1';
+		if rising_edge(RCK) then
+			if debounce_state = 0 then
+				if HIDE_not = '0' then
+					HIDE <= not HIDE;
+					debounce_state := 1;
+				end if;
+			elsif debounce_state = wait_count then
+				if HIDE_not = '1' then
+					debounce_state := 0;
+				else
+					debounce_state := wait_count;
+				end if;
+			else
+				debounce_state := debounce_state + 1;
 			end if;
-		end loop;
+			
+			if SHOW_not = '0' then
+				SHOW <= true;
+			else
+				SHOW <= false;
+			end if;
+		end if;
 	end process;
 	
-	-- The UPLOAD flag is set when the Relay is reading from the message buffer.
-	-- The EMPTY flag is set when the Message Buffer is nearly empty.
-	Fifo_Indicators : process (CK,RCK,RESET) is
+	-- Construct indicator lamp signals. We flash the UPLOAD lamp
+	-- for end_count RCK periods every time we see MRDS asserted.
+	Indicator_Lamps : process (CK,RCK,RESET) is
 	constant end_count : integer := 255;
-	variable upload_timer, empty_timer : integer range 0 to end_count;
-	variable upload_state, empty_state : integer range 0 to 1;
+	variable upload_timer : integer range 0 to end_count;
+	variable upload_state : integer range 0 to 1;
 	begin
 		if (RESET = '1') then
 			UPLOAD <= false;
 			upload_state := 0;
-			EMPTY <= false;
-			empty_state := 0;
 		elsif rising_edge(CK) then
 			if upload_state = 0 then
 				if MRDS then
@@ -1197,45 +1389,46 @@ begin
 					upload_state := 0;
 				end if;
 			end if;
-			UPLOAD <= (upload_state /= 0);
-			
-			if empty_state = 0 then
-				if (to_integer(unsigned(fifo_byte_count)) < fifo_near_empty) then
-					empty_state := 1;
-				else
-					empty_state := 0;
-				end if;
-			else
-				if empty_timer < end_count-3 then
-					empty_state := 1;
-				else
-					empty_state := 0;
-				end if;
-			end if;
-			EMPTY <= (empty_state /= 0);
+			UPLOAD <= (upload_state /= 0);			
 		end if;
 		
 		if (RESET = '1') then
 			upload_timer := 0;
-			empty_timer := 0;
 		elsif rising_edge(RCK) then
 			if (upload_state = 0) then
 				upload_timer := 0;
 			else
 				upload_timer := upload_timer + 1;
 			end if;
-
-			if (empty_state = 0) then
-				empty_timer := 0;
-			else
-				empty_timer := empty_timer + 1;
-			end if;
 		end if;
+		
+		-- Set the activity lamps according to the indicator control
+		-- and the HIDE and SHOW signals. The activity indicator signals 
+		-- are negative true. When the signal is 0, the indicator is on.
+		for i in 1 to 15 loop
+			if SHOW then
+				indicators(i) <= '0';
+			elsif (indicator_control(i) = '1') and (not HIDE) then
+				indicators(i) <= '0';
+			else 
+				indicators(i) <= '1';
+			end if;
+		end loop;
+		
+		-- The UPLOAD indicator is negative true. We can hide this one,
+		-- because it flashes, or show it.
+		indicators(16) <= not to_std_logic((UPLOAD and not HIDE) or SHOW);
+		
+		-- The DMERR indicator is negative true. We never hide this 
+		-- indicator, but we can show it. We don't hide it because it
+		-- is important to see when we have an error and it does not flash,
+		-- nor is it bright.
+		indicators(17) <= not to_std_logic((DMERR = '1') or SHOW);
+
+		-- We turn on the SHOW and HIDE lamps when their flags are set.
+		indicators(18) <= to_std_logic(not SHOW); 
+		indicators(19) <= to_std_logic(not HIDE);
 	end process;
-	
-	-- Upload and DMERR indicators are 16 and 17 respectively, negative true.
-	indicators(16) <= to_std_logic(not UPLOAD);
-	indicators(17) <= not DMERR;
 	
 	-- Test points. We use the HIDE and SHOW buttons to give us a larger
 	-- selection of test signals.	
@@ -1280,7 +1473,6 @@ begin
 		end if;
 	end process;
 	
-	TP4 <= RB2 or RB5 or HDW or DX1 or DX2;
+	TP4 <= RB2 or RB5 or HDW;
 	TP3 <= cont_addr(6) or cont_addr(7) or DC5 or DC6;
-	TXON <= HDW;
 end behavior;

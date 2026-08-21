@@ -27,22 +27,19 @@ const relay_crlo_addr 0x0E10 ; Relay Command Register LO (Read)
 const relay_djr_rst_addr 0x0E11 ; Reset Device Job Register (Write)
 const relay_der_addr 0x0E12 ; Relay Device Element Register (Read)
 const comm_status_addr 0x0E16 ; Communication Status Register (Read)
-const dpcr_addr 0x0E17 ; Display Panel Configuration Request (Write)
-const dpod_addr 0x0E18 ; Display Panel Output Data (Write)
-const dpid_addr 0x0E19 ; Display Panel Input Data (Read)
-const msb_read_addr 0x0E1A ; Detector Module Buffer Read (Write)
+const msb_read_addr 0x0E1A ; Message Selector Buffer Read (Write)
 const irq_tmr2_max_addr 0x0E1B ; Interrupt Timer Two Period Minus One (Read/Write)
 const irq_tmr2_addr 0x0E1C ; Interrupt Counter Value (Read)
 const fv_addr 0x0E1D ; Firmware Version number (Read)
 const zero_indicator_addr 0x0E20 ; Zero channel indicator (Write)
-const msb_ch_addr 0x0E30 ; Detector Module ID (Read)
-const msb_hi_addr 0x0E31 ; Detector Module HI Data Byte (Read)
-const msb_lo_addr 0x0E32 ; Detector Module LO Data Byte (Read)
+const msb_ch_addr 0x0E30 ; Message ID (Read)
+const msb_hi_addr 0x0E31 ; Message HI Data Byte (Read)
+const msb_lo_addr 0x0E32 ; Message LO Data Byte (Read)
 const msb_pwr_addr 0x0E33 ; Detector Module Power (Read)
 const msb_an_addr 0x0E34 ; Detector Module Antenna Number (Read)
-const tf_sr_addr 0x0E35 ; Transmitting Feedthrough Status Register (Read)
-const tf_op_addr 0x0E36 ; Transmitting Feedthrough Opcode (Write)
-const tf_n_addr 0x0E37 ; Transmitting Feedthrough Operand (Write)
+const di_addr 0x0E35 ; Digital Input Register (Read)
+const cb_lo_addr 0x0E36 ; Command Buffer LO Byte (Write)
+const cb_hi_addr 0x0E37 ; Command Buffer HI Byte (Write)
 
 ; Controller Job Numbers.
 const read_job 3
@@ -72,11 +69,6 @@ const dpirdy_bit_mask 0x10
 const msbrdy_bit_mask 0x20
 const dmerr_bit_mask 0x40
 const mrdy_bit_mask 0x80
-
-; Display Panel Opcodes
-const dp_opcode_msg 0x10
-const dp_opcode_comm 0x20
-const dp_opcode_sw 0x60
 
 ; Hardware Constants.
 const num_indicators 15
@@ -489,9 +481,9 @@ ld A,(relay_der_addr)
 sub A,stimulator_element
 jp nz,intf_cmd
 ld A,(relay_crlo_addr)
-ld (tf_op_addr),A
+ld (cb_lo_addr),A
 ld A,(relay_crhi_addr)
-ld (tf_n_addr),A
+ld (cb_hi_addr),A
 jp done_cmd_xmit
 
 ; If the command is meant for the logic input-output interface,
@@ -501,9 +493,9 @@ ld A,(relay_der_addr)
 sub A,interface_element
 jp nz,done_cmd_xmit
 ld A,(relay_crlo_addr)
-ld (tf_op_addr),A
+ld (cb_lo_addr),A
 ld A,(relay_crhi_addr)
-ld (tf_n_addr),A
+ld (cb_hi_addr),A
 jp done_cmd_xmit
 
 ; Done with all supported command jobs. Generate a falling, edge on 
@@ -611,7 +603,7 @@ add A,receiver_type
 ld (msg_write_addr),A
 ld A,(comm_status_addr)
 ld (msg_write_addr),A
-ld A,(tf_sr_addr)
+ld A,(di_addr)
 ld (msg_write_addr),A
 
 ; Reset the timestamp interrupt.
