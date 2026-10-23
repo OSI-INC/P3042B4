@@ -1408,15 +1408,11 @@ begin
 			end if;
 		end loop;
 		
-		-- The UPLOAD indicator is negative true. We can hide this one,
-		-- because it flashes, or show it.
-		indicators(16) <= not to_std_logic((UPLOAD and not HIDE) or SHOW);
+		-- The UPLOAD indicator is negative true.
+		indicators(16) <= to_std_logic(not UPLOAD);
 		
-		-- The DMERR indicator is negative true. We never hide this 
-		-- indicator, but we can show it. We don't hide it because it
-		-- is important to see when we have an error and it does not flash,
-		-- nor is it bright.
-		indicators(17) <= not to_std_logic((DMERR = '1') or SHOW);
+		-- The DMERR indicator is negative true.
+		indicators(17) <= not DMERR;
 
 		-- We turn on the SHOW and HIDE lamps when their flags are set.
 		indicators(18) <= to_std_logic(not SHOW); 
